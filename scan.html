@@ -70,7 +70,7 @@
 (function () {
   var P = new URLSearchParams(location.search);
   var BACK = P.get('back') || '';
-  var PERMITIDO = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[A-Za-z0-9_-]+\/exec$/;   // solo vuelve a webs de Apps Script
+  var PERMITIDO = /^https:\/\/script\.google\.com\/[A-Za-z0-9_.\/-]*\/s\/[A-Za-z0-9_-]+\/(exec|dev)$/;   // solo vuelve a webs de Apps Script (cualquier formato de URL de Google)
   var modo = P.get('modo') === 'dev' ? 'dev' : 'salida';
   var ev = P.get('ev') || '';
   var leidos = (P.get('prev') || '').split(',').map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean);
@@ -82,7 +82,9 @@
   $('ctx').textContent = (modo === 'dev' ? 'Devolución' : 'Salida') + (ev ? ' · ' + ev : '');
   var conVuelta = PERMITIDO.test(BACK);
   if (!conVuelta) {
-    $('aviso').textContent = 'Modo prueba: se ha abierto sin pasar por la web, así que "Terminar" no enviará nada.';
+    $('aviso').textContent = BACK
+      ? 'No reconozco la dirección de vuelta (' + BACK.slice(0, 80) + '). Mándale una captura de esto a Marc.'
+      : 'Modo prueba: se ha abierto sin pasar por la web, así que "Terminar" no enviará nada.';
     $('fin').disabled = true; $('cancel').disabled = true;
   }
 
