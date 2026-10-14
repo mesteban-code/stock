@@ -6,13 +6,18 @@
 <meta name="robots" content="noindex">
 <title>Lector · Stock 3F Connect</title>
 <style>
-  :root { --ink:#1f2a37; --mute:#6b7280; --line:#e5e7eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --acc:#e4572e; }
+  :root { --ink:#1f2a37; --ok:#16a34a; --bad:#dc2626; }
   * { box-sizing:border-box; }
   html, body { margin:0; background:#0f172a; color:#fff; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  header { padding:12px 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  header { padding:12px 16px; }
   header .t { font-weight:700; } header .s { font-size:13px; opacity:.75; }
-  #cam { width:100%; max-width:520px; margin:0 auto; background:#000; min-height:260px; }
-  #estado { text-align:center; font-size:14px; padding:8px 16px; min-height:20px; }
+  .visor { position:relative; width:100%; max-width:520px; margin:0 auto; background:#000; aspect-ratio:4/3; overflow:hidden; }
+  video { width:100%; height:100%; object-fit:cover; display:block; }
+  .marco { position:absolute; inset:18% 22%; border:3px solid rgba(255,255,255,.85); border-radius:12px; pointer-events:none; }
+  .visor.ok .marco { border-color:#22c55e; }
+  #activar { position:absolute; inset:0; margin:auto; width:220px; height:56px; border:0; border-radius:12px; background:#fff; color:var(--ink); font-size:17px; font-weight:700; }
+  #estado { text-align:center; font-size:15px; padding:10px 16px; min-height:22px; }
+  #estado.err { background:#7f1d1d; margin:8px 16px; border-radius:8px; }
   .wrap { max-width:520px; margin:0 auto; padding:0 16px 120px; }
   .man { display:flex; gap:8px; margin:6px 0 10px; }
   .man input { flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:#1e293b; color:#fff; font-size:16px; }
@@ -22,20 +27,24 @@
   .it.nuevo { background:#14532d; }
   .it b { flex:1; font-size:17px; letter-spacing:.02em; } .it span { font-size:12px; opacity:.7; }
   .it button { border:0; background:none; color:#94a3b8; font-size:22px; }
+  .aviso { font-size:13px; opacity:.8; margin:4px 0 8px; }
   .pie { position:fixed; left:0; right:0; bottom:0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:#0f172a; border-top:1px solid #1e293b; }
   .pie .in { max-width:520px; margin:0 auto; display:flex; gap:8px; }
   .btn { flex:1; padding:15px; border:0; border-radius:10px; font-size:17px; font-weight:700; }
   .ok { background:#fff; color:var(--ink); } .no { background:#334155; color:#fff; flex:0 0 auto; }
-  .err { background:#7f1d1d; color:#fff; padding:12px; border-radius:8px; margin:10px 0; font-size:14px; }
+  .btn:disabled { opacity:.4; }
 </style>
 </head>
 <body>
-<header>
-  <div><div class="t">📷 Lector · Stock 3F</div><div class="s" id="ctx"></div></div>
-</header>
-<div id="cam"></div>
-<div id="estado">Iniciando cámara…</div>
+<header><div class="t">📷 Lector · Stock 3F</div><div class="s" id="ctx"></div></header>
+<div class="visor" id="visor">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="marco"></div>
+  <button id="activar">▶ Activar cámara</button>
+</div>
+<div id="estado">Pulsa "Activar cámara"</div>
 <div class="wrap">
+  <div class="aviso" id="aviso"></div>
   <div class="man">
     <input id="manual" placeholder="o escribe el Nº (RKG-001)" autocapitalize="characters" autocomplete="off" enterkeyhint="done">
     <button id="add">Añadir</button>
@@ -47,15 +56,16 @@
   <button class="btn no" id="cancel">Cancelar</button>
   <button class="btn ok" id="fin">Terminar y volver</button>
 </div></div>
+<canvas id="lienzo" style="display:none"></canvas>
 
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script>
 /*
  * Lector de códigos para la web de stock (Apps Script).
- * Esta página no guarda ni lee ningún dato: solo lee códigos con la cámara y vuelve a la web
- * con la lista en la URL. La web comprueba cada equipo y pide la cuenta de 3fconnect.es.
- *
- * Parámetros de entrada: back (URL de la web), modo (salida|dev), ev, resp, presu, prev (Nº ya leídos), q (ref:cant,...)
+ * No guarda ni lee ningún dato: abre la cámara, lee códigos y vuelve a la web con la lista en la URL.
+ * La web comprueba cada equipo y pide la cuenta de 3fconnect.es.
+ * Lectura: BarcodeDetector nativo si el navegador lo tiene (QR y Code 128); si no, jsQR (QR).
+ * Parámetros: back (URL de la web), modo (salida|dev), ev, resp, presu, prev (Nº ya leídos), q (ref:cant,...)
  */
 (function () {
   var P = new URLSearchParams(location.search);
@@ -67,10 +77,13 @@
   var nuevos = {};
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function estado(txt, err) { $('estado').textContent = txt; $('estado').className = err ? 'err' : ''; }
 
   $('ctx').textContent = (modo === 'dev' ? 'Devolución' : 'Salida') + (ev ? ' · ' + ev : '');
-  if (!PERMITIDO.test(BACK)) {
-    $('estado').innerHTML = '<div class="err">Abre el lector desde el botón 📷 de la web de stock.</div>';
+  var conVuelta = PERMITIDO.test(BACK);
+  if (!conVuelta) {
+    $('aviso').textContent = 'Modo prueba: se ha abierto sin pasar por la web, así que "Terminar" no enviará nada.';
+    $('fin').disabled = true; $('cancel').disabled = true;
   }
 
   function idDe(txt) {
@@ -102,16 +115,18 @@
   function anadir(txt) {
     var id = idDe(txt);
     if (!id || id.length > 40) return;
-    if (leidos.indexOf(id) >= 0) { pitido(false); $('estado').textContent = id + ' ya está en la lista'; return; }
+    if (leidos.indexOf(id) >= 0) { pitido(false); estado(id + ' ya está en la lista'); return; }
     leidos.push(id); nuevos[id] = true; pitido(true);
-    $('estado').textContent = '✓ ' + id;
+    estado('✓ ' + id);
+    $('visor').classList.add('ok'); setTimeout(function () { $('visor').classList.remove('ok'); }, 400);
     pintar();
   }
   $('add').onclick = function () { anadir($('manual').value); $('manual').value = ''; };
   $('manual').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('add').click(); } });
 
   function volver(conLista) {
-    if (!PERMITIDO.test(BACK)) return;
+    if (!conVuelta) return;
+    parar();
     var q = new URLSearchParams();
     q.set('scan', conLista ? leidos.join(',') : (P.get('prev') || ''));
     q.set('modo', modo);
@@ -121,25 +136,74 @@
   $('fin').onclick = function () { volver(true); };
   $('cancel').onclick = function () { volver(false); };
 
-  var ultimo = '', ultimoT = 0;
-  function arrancar() {
-    if (!window.Html5Qrcode) { $('estado').innerHTML = '<div class="err">No se ha podido cargar el lector. Revisa la conexión.</div>'; return; }
-    var lector = new Html5Qrcode('cam');
-    var lado = Math.min(260, Math.floor(window.innerWidth * 0.7));
-    lector.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: lado, height: lado } }, function (txt) {
-      var t = Date.now();
-      if (txt === ultimo && t - ultimoT < 2500) return;     // el mismo código delante de la cámara no se repite
-      ultimo = txt; ultimoT = t;
-      anadir(txt);
-    }, function () {}).then(function () {
-      $('estado').textContent = 'Apunta a los códigos uno tras otro';
-    }).catch(function (e) {
-      $('estado').innerHTML = '<div class="err">No se puede usar la cámara (' + esc(e && e.name || e) + '). ' +
-        'Revisa en Ajustes del móvil que el navegador tiene permiso de Cámara. Mientras, puedes escribir los números.</div>';
-    });
+  /* ── cámara y lectura ── */
+  var video = $('video'), lienzo = $('lienzo'), ctx2d = lienzo.getContext('2d', { willReadFrequently: true });
+  var flujo = null, detector = null, activo = false, ultimo = '', ultimoT = 0;
+  function parar() {
+    activo = false;
+    if (flujo) { flujo.getTracks().forEach(function (t) { t.stop(); }); flujo = null; }
   }
+  function leido(txt) {
+    var t = Date.now();
+    if (txt === ultimo && t - ultimoT < 2500) return;      // el mismo código delante de la cámara no se repite
+    ultimo = txt; ultimoT = t;
+    anadir(txt);
+  }
+  function bucle() {
+    if (!activo) return;
+    if (video.readyState >= 2 && video.videoWidth) {
+      if (detector) {
+        detector.detect(video).then(function (cs) {
+          if (cs && cs.length) leido(cs[0].rawValue);
+        }).catch(function () {}).then(function () { setTimeout(bucle, 120); });
+        return;
+      }
+      if (window.jsQR) {
+        var w = 640, h = Math.round(video.videoHeight * 640 / video.videoWidth);
+        lienzo.width = w; lienzo.height = h;
+        ctx2d.drawImage(video, 0, 0, w, h);
+        var c = window.jsQR(ctx2d.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+        if (c && c.data) leido(c.data);
+      }
+    }
+    setTimeout(bucle, 120);
+  }
+  function activar() {
+    $('activar').style.display = 'none';
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      estado('Este navegador no permite usar la cámara. Prueba con Safari o Chrome actualizados.', true); return;
+    }
+    if (!window.jsQR && !('BarcodeDetector' in window)) {
+      estado('No se ha podido cargar el lector. Revisa la conexión y recarga.', true); return;
+    }
+    estado('Pidiendo permiso de cámara…');
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      .then(function (s) {
+        flujo = s; video.srcObject = s;
+        video.setAttribute('playsinline', ''); video.muted = true;
+        return video.play();
+      })
+      .then(function () {
+        if ('BarcodeDetector' in window) {
+          try { detector = new window.BarcodeDetector({ formats: ['qr_code', 'code_128'] }); } catch (e) { detector = null; }
+        }
+        activo = true;
+        estado('Apunta a los códigos uno tras otro');
+        bucle();
+      })
+      .catch(function (e) {
+        $('activar').style.display = '';
+        var n = e && e.name;
+        estado(n === 'NotAllowedError'
+          ? 'Permiso de cámara denegado. En Ajustes del móvil, permite la Cámara para este navegador y vuelve a pulsar Activar.'
+          : 'No se puede abrir la cámara (' + (n || e) + ').', true);
+      });
+  }
+  $('activar').onclick = activar;
+  document.addEventListener('visibilitychange', function () { if (document.hidden) { parar(); $('activar').style.display = ''; estado('Pulsa "Activar cámara"'); } });
+
   pintar();
-  arrancar();
+  activar();       // intenta arrancar sola; si el navegador pide un toque, queda el botón
 })();
 </script>
 </body>
