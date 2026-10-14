@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Lector · Stock 3F Connect</title>
+<style>
+  :root { --ink:#1f2a37; --mute:#6b7280; --line:#e5e7eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --acc:#e4572e; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:#0f172a; color:#fff; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:12px 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  header .t { font-weight:700; } header .s { font-size:13px; opacity:.75; }
+  #cam { width:100%; max-width:520px; margin:0 auto; background:#000; min-height:260px; }
+  #estado { text-align:center; font-size:14px; padding:8px 16px; min-height:20px; }
+  .wrap { max-width:520px; margin:0 auto; padding:0 16px 120px; }
+  .man { display:flex; gap:8px; margin:6px 0 10px; }
+  .man input { flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:#1e293b; color:#fff; font-size:16px; }
+  .man button { padding:0 14px; border:0; border-radius:8px; background:#334155; color:#fff; font-size:15px; }
+  .cnt { font-size:15px; margin:6px 0; } .cnt b { font-size:22px; }
+  .it { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; background:#1e293b; margin-top:6px; }
+  .it.nuevo { background:#14532d; }
+  .it b { flex:1; font-size:17px; letter-spacing:.02em; } .it span { font-size:12px; opacity:.7; }
+  .it button { border:0; background:none; color:#94a3b8; font-size:22px; }
+  .pie { position:fixed; left:0; right:0; bottom:0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:#0f172a; border-top:1px solid #1e293b; }
+  .pie .in { max-width:520px; margin:0 auto; display:flex; gap:8px; }
+  .btn { flex:1; padding:15px; border:0; border-radius:10px; font-size:17px; font-weight:700; }
+  .ok { background:#fff; color:var(--ink); } .no { background:#334155; color:#fff; flex:0 0 auto; }
+  .err { background:#7f1d1d; color:#fff; padding:12px; border-radius:8px; margin:10px 0; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <div><div class="t">📷 Lector · Stock 3F</div><div class="s" id="ctx"></div></div>
+</header>
+<div id="cam"></div>
+<div id="estado">Iniciando cámara…</div>
+<div class="wrap">
+  <div class="man">
+    <input id="manual" placeholder="o escribe el Nº (RKG-001)" autocapitalize="characters" autocomplete="off" enterkeyhint="done">
+    <button id="add">Añadir</button>
+  </div>
+  <div class="cnt"><b id="n">0</b> leídos</div>
+  <div id="lista"></div>
+</div>
+<div class="pie"><div class="in">
+  <button class="btn no" id="cancel">Cancelar</button>
+  <button class="btn ok" id="fin">Terminar y volver</button>
+</div></div>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+/*
+ * Lector de códigos para la web de stock (Apps Script).
+ * Esta página no guarda ni lee ningún dato: solo lee códigos con la cámara y vuelve a la web
+ * con la lista en la URL. La web comprueba cada equipo y pide la cuenta de 3fconnect.es.
+ *
+ * Parámetros de entrada: back (URL de la web), modo (salida|dev), ev, resp, presu, prev (Nº ya leídos), q (ref:cant,...)
+ */
+(function () {
+  var P = new URLSearchParams(location.search);
+  var BACK = P.get('back') || '';
+  var PERMITIDO = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[A-Za-z0-9_-]+\/exec$/;   // solo vuelve a webs de Apps Script
+  var modo = P.get('modo') === 'dev' ? 'dev' : 'salida';
+  var ev = P.get('ev') || '';
+  var leidos = (P.get('prev') || '').split(',').map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean);
+  var nuevos = {};
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  $('ctx').textContent = (modo === 'dev' ? 'Devolución' : 'Salida') + (ev ? ' · ' + ev : '');
+  if (!PERMITIDO.test(BACK)) {
+    $('estado').innerHTML = '<div class="err">Abre el lector desde el botón 📷 de la web de stock.</div>';
+  }
+
+  function idDe(txt) {
+    var s = String(txt || '').trim();
+    var m = s.match(/[?&]u=([^&#\s]+)/i);
+    if (m) s = decodeURIComponent(m[1]);
+    return s.toUpperCase().replace(/\s+/g, '');
+  }
+  var actx = null;
+  function pitido(ok) {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      var o = actx.createOscillator(), g = actx.createGain();
+      o.frequency.value = ok ? 1200 : 300; g.gain.value = 0.15;
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + (ok ? 0.08 : 0.3));
+    } catch (e) {}
+    if (navigator.vibrate) { try { navigator.vibrate(ok ? 60 : 300); } catch (e) {} }
+  }
+  function pintar() {
+    $('n').textContent = leidos.length;
+    $('lista').innerHTML = leidos.slice().reverse().map(function (id) {
+      return '<div class="it' + (nuevos[id] ? ' nuevo' : '') + '"><b>' + esc(id) + '</b>' +
+        (nuevos[id] ? '' : '<span>ya estaba</span>') + '<button data-id="' + esc(id) + '">×</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('#lista button'), function (b) {
+      b.onclick = function () { leidos = leidos.filter(function (x) { return x !== b.dataset.id; }); pintar(); };
+    });
+  }
+  function anadir(txt) {
+    var id = idDe(txt);
+    if (!id || id.length > 40) return;
+    if (leidos.indexOf(id) >= 0) { pitido(false); $('estado').textContent = id + ' ya está en la lista'; return; }
+    leidos.push(id); nuevos[id] = true; pitido(true);
+    $('estado').textContent = '✓ ' + id;
+    pintar();
+  }
+  $('add').onclick = function () { anadir($('manual').value); $('manual').value = ''; };
+  $('manual').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('add').click(); } });
+
+  function volver(conLista) {
+    if (!PERMITIDO.test(BACK)) return;
+    var q = new URLSearchParams();
+    q.set('scan', conLista ? leidos.join(',') : (P.get('prev') || ''));
+    q.set('modo', modo);
+    ['ev', 'resp', 'presu', 'q'].forEach(function (k) { if (P.get(k)) q.set(k, P.get(k)); });
+    location.href = BACK + '?' + q.toString();
+  }
+  $('fin').onclick = function () { volver(true); };
+  $('cancel').onclick = function () { volver(false); };
+
+  var ultimo = '', ultimoT = 0;
+  function arrancar() {
+    if (!window.Html5Qrcode) { $('estado').innerHTML = '<div class="err">No se ha podido cargar el lector. Revisa la conexión.</div>'; return; }
+    var lector = new Html5Qrcode('cam');
+    var lado = Math.min(260, Math.floor(window.innerWidth * 0.7));
+    lector.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: lado, height: lado } }, function (txt) {
+      var t = Date.now();
+      if (txt === ultimo && t - ultimoT < 2500) return;     // el mismo código delante de la cámara no se repite
+      ultimo = txt; ultimoT = t;
+      anadir(txt);
+    }, function () {}).then(function () {
+      $('estado').textContent = 'Apunta a los códigos uno tras otro';
+    }).catch(function (e) {
+      $('estado').innerHTML = '<div class="err">No se puede usar la cámara (' + esc(e && e.name || e) + '). ' +
+        'Revisa en Ajustes del móvil que el navegador tiene permiso de Cámara. Mientras, puedes escribir los números.</div>';
+    });
+  }
+  pintar();
+  arrancar();
+})();
+</script>
+</body>
+</html>
